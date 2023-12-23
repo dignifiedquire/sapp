@@ -95,7 +95,7 @@ impl Sapp {
 
         let mut style = Style::default();
 
-        style.spacing.button_padding = vec2(5., 5.);
+        style.spacing.button_padding = vec2(10., 5.);
 
         let visuals = &mut style.visuals;
         visuals.dark_mode = true;
