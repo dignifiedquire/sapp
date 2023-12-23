@@ -11,10 +11,36 @@ use iroh_net::ticket::BlobTicket;
 mod upload;
 
 fn main() -> Result<(), eframe::Error> {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([640.0, 480.0])
+        .with_drag_and_drop(true);
+
+    // try from different paths to account for dev and production
+    let mut paths = vec![
+        // dev
+        PathBuf::from("./resources/icon.png"),
+    ];
+    if let Some(r) = macos_resource_path() {
+        paths.push(r.join("resources/icon.png"));
+    }
+
+    for path in &paths {
+        if let Ok(icon) = image::open(path) {
+            let icon = icon.to_rgba8();
+            let (icon_width, icon_height) = icon.dimensions();
+            let rgba = icon.into_raw();
+            let icon_data = egui::IconData {
+                rgba,
+                width: icon_width,
+                height: icon_height,
+            };
+            viewport = viewport.with_icon(icon_data);
+            break;
+        }
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([640.0, 480.0])
-            .with_drag_and_drop(true),
+        viewport,
         ..Default::default()
     };
     eframe::run_native("Sendme", options, Box::new(|cc| Box::new(Sapp::new(cc))))
@@ -227,4 +253,18 @@ fn preview_files_being_dropped(ctx: &egui::Context) {
         };
         painter.galley(pos, galley);
     }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_resource_path() -> Option<PathBuf> {
+    let bundle = core_foundation::bundle::CFBundle::main_bundle();
+    let bundle_path = bundle.path()?;
+    let resources_path = bundle.resources_path()?;
+    let absolute_resources_root = bundle_path.join(resources_path);
+    Some(absolute_resources_root)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_resource_path() -> Option<PathBuf> {
+    None
 }
