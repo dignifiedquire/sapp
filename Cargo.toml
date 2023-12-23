@@ -33,3 +33,10 @@ copyright = "Copyright (c) N0 Inc (2023). All rights reserved."
 category = "Developer Tool"
 short_description = "Share your data"
 osx_minimum_system_version = "10.12"
+
+[profile.release]
+strip = true  # Automatically strip symbols from the binary.
+opt-level = "z"  # Optimize for size.
+lto = true
+codegen-units = 1
+panic = "abort"
