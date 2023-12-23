@@ -9,13 +9,16 @@ use eframe::{
     egui::{self, Button},
     epaint::{vec2, Color32, Stroke},
 };
+use iroh_bytes::get::db::DownloadProgress;
 use iroh_net::ticket::BlobTicket;
 
 mod upload;
 
+const HEIGHT: f32 = 480.;
+
 fn main() -> Result<(), eframe::Error> {
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([640.0, 480.0])
+        .with_inner_size([640.0, HEIGHT])
         .with_drag_and_drop(true);
 
     // try from different paths to account for dev and production
@@ -51,6 +54,8 @@ fn main() -> Result<(), eframe::Error> {
 
 struct Sapp {
     selected_file: Option<PathBuf>,
+    input_text: String,
+    download_target: Option<PathBuf>,
     shared_state: Arc<Mutex<SharedState>>,
     worker: flume::Sender<WorkerMessage>,
 }
@@ -59,6 +64,7 @@ struct Sapp {
 struct SharedState {
     sharing_progress: Option<f32>,
     ticket: Option<BlobTicket>,
+    download_progress: Option<f32>,
 }
 
 impl SharedState {
@@ -71,6 +77,7 @@ impl SharedState {
 #[derive(Debug)]
 enum WorkerMessage {
     Share(PathBuf),
+    Get(String, PathBuf),
 }
 
 impl Sapp {
@@ -136,12 +143,54 @@ impl Sapp {
                             }
                         }
                     }
+                    WorkerMessage::Get(ticket, target) => {
+                        match ticket.parse::<BlobTicket>() {
+                            Ok(ticket) => {
+                                println!("getting: {}", ticket);
+                                // import progress
+                                let (send, recv) = flume::bounded(32);
+
+                                let ctx2 = ctx.clone();
+                                let ss2 = ss1.clone();
+                                ss1.lock().unwrap().download_progress = Some(0.0);
+                                ctx.request_repaint();
+
+                                let res = rt.block_on(async move {
+                                    tokio::task::spawn(async move {
+                                        while let Ok(ev) = recv.recv_async().await {
+                                            // TODO: propper progress
+                                            match ev {
+                                                DownloadProgress::AllDone => {}
+                                                _ => {}
+                                            }
+                                        }
+                                    });
+
+                                    upload::get(ticket, target, send).await
+                                });
+
+                                if let Err(err) = res {
+                                    // TODO: show error
+                                    eprintln!("failed: {:?}", err);
+                                } else {
+                                    ss1.lock().unwrap().download_progress = None;
+                                    ctx.request_repaint();
+                                }
+                            }
+                            Err(err) => {
+                                // TODO: show error
+                                eprintln!("invalid ticket: {:?}", err);
+                            }
+                        }
+                    }
                 }
             }
         });
 
         Sapp {
             shared_state,
+            input_text: String::new(),
+            download_target: None,
             worker: s,
             selected_file: None,
         }
@@ -152,62 +201,102 @@ impl eframe::App for Sapp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                ui.heading("Sendme");
+                ui.heading("Receive");
                 ui.add_space(10.);
 
-                let button = Button::new("Drag and drop or browse your files…")
-                    .rounding(10.)
-                    .stroke(Stroke::new(2., Color32::DARK_GRAY))
-                    .min_size(vec2(250., 150.));
-
-                let button_res = ui.add(button);
-                if button_res.clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
-                        self.selected_file.replace(path);
+                let state = self.shared_state.lock().unwrap();
+                if state.download_progress.is_some() {
+                    let mut text: &str = &self.input_text;
+                    ui.add(egui::TextEdit::multiline(&mut text).font(egui::FontId::monospace(12.)));
+                } else {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.input_text)
+                            .font(egui::FontId::monospace(12.))
+                            .hint_text("Paste ticket"),
+                    );
+                    if ui.button("Save to").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.download_target.replace(path);
+                        }
                     }
                 }
-                preview_files_being_dropped(&button_res.ctx);
+                if let Some(ref target) = self.download_target {
+                    ui.label(format!("Target: {}", target.display()));
 
-                if let Some(path) = &self.selected_file {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(50.);
-                        ui.heading("Selected file:");
-                        let name = path
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| path.display().to_string());
-                        ui.monospace(&name);
+                    if let Some(_progress) = state.download_progress {
+                        ui.add_space(5.);
+                        ui.add(egui::Spinner::new());
+                    } else {
+                        if ui.button("Download").clicked() {
+                            self.worker
+                                .send(WorkerMessage::Get(self.input_text.clone(), target.clone()))
+                                .ok();
+                        }
+                    }
+                }
+            });
+            ui.add_space(20.);
+            ui.separator();
+            ui.add_space(20.);
+            ui.vertical_centered(|ui| {
+                ui.heading("Send");
+                ui.add_space(10.);
 
-                        ui.add_space(30.);
-                        {
-                            let state = self.shared_state.lock().unwrap();
-                            if state.ticket.is_none() {
-                                if ui.button("Share").clicked() {
-                                    self.worker.send(WorkerMessage::Share(path.clone())).ok();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let button = Button::new("Drag and drop or browse your files…")
+                        .rounding(10.)
+                        .stroke(Stroke::new(2., Color32::DARK_GRAY))
+                        .min_size(vec2(250., 150.));
+
+                    let button_res = ui.add(button);
+                    if button_res.clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_file() {
+                            self.selected_file.replace(path);
+                        }
+                    }
+                    preview_files_being_dropped(&button_res.ctx);
+
+                    if let Some(path) = &self.selected_file {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(50.);
+                            ui.heading("Selected file:");
+                            let name = path
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| path.display().to_string());
+                            ui.monospace(&name);
+
+                            ui.add_space(30.);
+                            {
+                                let state = self.shared_state.lock().unwrap();
+                                if state.ticket.is_none() {
+                                    if ui.button("Share").clicked() {
+                                        self.worker.send(WorkerMessage::Share(path.clone())).ok();
+                                    }
+                                }
+                                if let Some(_progress) = state.sharing_progress {
+                                    ui.add_space(5.);
+                                    ui.add(egui::Spinner::new());
+                                }
+
+                                if let Some(ref ticket) = state.ticket {
+                                    // selectable text
+                                    let ticket_text = ticket.to_string();
+                                    let mut text: &str = &ticket_text;
+                                    ui.vertical_centered(|ui| {
+                                        ui.heading("Ready to share:");
+                                        ui.add_space(10.);
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut text)
+                                                .font(egui::FontId::monospace(12.)),
+                                        );
+                                    });
                                 }
                             }
-                            if let Some(_progress) = state.sharing_progress {
-                                ui.add_space(5.);
-                                ui.add(egui::Spinner::new());
-                            }
-
-                            if let Some(ref ticket) = state.ticket {
-                                // selectable text
-                                let ticket_text = ticket.to_string();
-                                let mut text: &str = &ticket_text;
-                                ui.vertical_centered(|ui| {
-                                    ui.heading("Ready to share:");
-                                    ui.add_space(10.);
-                                    ui.add(
-                                        egui::TextEdit::multiline(&mut text)
-                                            .font(egui::FontId::monospace(12.)),
-                                    );
-                                });
-                            }
-                        }
-                    });
-                }
+                        });
+                    }
+                });
             });
         });
 

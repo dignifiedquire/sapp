@@ -5,9 +5,10 @@ use futures::{
 };
 use iroh_bytes::{
     format::collection::Collection,
+    get::{db::DownloadProgress, request::get_hash_seq_and_sizes},
     provider::{handle_connection, Event, EventSender},
     store::{ExportMode, ImportMode, ImportProgress},
-    BlobFormat, Hash, TempTag,
+    BlobFormat, Hash, HashAndFormat, TempTag,
 };
 use iroh_net::{key::SecretKey, ticket::BlobTicket, MagicEndpoint};
 use rand::Rng;
@@ -198,8 +199,11 @@ fn get_export_path(root: &Path, name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-async fn export(db: impl iroh_bytes::store::Store, collection: Collection) -> Result<()> {
-    let root = std::env::current_dir()?;
+async fn export(
+    root: &Path,
+    db: impl iroh_bytes::store::Store,
+    collection: Collection,
+) -> Result<()> {
     for (name, hash) in collection.iter() {
         let target = get_export_path(&root, name)?;
         db.export(*hash, target, ExportMode::TryReference, |_position| Ok(()))
@@ -280,77 +284,67 @@ impl EventSender for Events {
     }
 }
 
-// async fn get(args: GetArgs) -> Result<()> {
-//     let ticket = args.ticket;
-//     let addr = ticket.node_addr().clone();
-//     let secret_key = get_or_create_secret(args.common.verbose > 0)?;
-//     let endpoint = MagicEndpoint::builder()
-//         .alpns(vec![])
-//         .secret_key(secret_key)
-//         .bind(args.common.magic_port)
-//         .await?;
-//     let dir_name = format!(".sendme-get-{}", ticket.hash().to_hex());
-//     let iroh_data_dir = std::env::current_dir()?.join(dir_name);
-//     let db = iroh_bytes::store::flat::Store::load(&iroh_data_dir).await?;
-//     let mp = MultiProgress::new();
-//     let connect_progress = mp.add(ProgressBar::hidden());
-//     connect_progress.set_draw_target(ProgressDrawTarget::stderr());
-//     connect_progress.set_style(ProgressStyle::default_spinner());
-//     connect_progress.set_message(format!("connecting to {}", addr.node_id));
-//     let connection = endpoint.connect(addr, iroh_bytes::protocol::ALPN).await?;
-//     let hash_and_format = HashAndFormat {
-//         hash: ticket.hash(),
-//         format: ticket.format(),
-//     };
-//     connect_progress.finish_and_clear();
-//     let (send, recv) = flume::bounded(32);
-//     let progress = iroh_bytes::util::progress::FlumeProgressSender::new(send);
-//     let (_hash_seq, sizes) =
-//         get_hash_seq_and_sizes(&connection, &hash_and_format.hash, 1024 * 1024 * 32)
-//             .await
-//             .map_err(show_get_error)?;
-//     let total_size = sizes.iter().sum::<u64>();
-//     let total_files = sizes.len().saturating_sub(1);
-//     let payload_size = sizes.iter().skip(1).sum::<u64>();
-//     eprintln!(
-//         "getting collection {} {} files, {}",
-//         print_hash(&ticket.hash(), args.common.format),
-//         total_files,
-//         HumanBytes(payload_size)
-//     );
-//     // print the details of the collection only in verbose mode
-//     if args.common.verbose > 0 {
-//         eprintln!(
-//             "getting {} blobs in total, {}",
-//             sizes.len(),
-//             HumanBytes(total_size)
-//         );
-//     }
-//     let _task = tokio::spawn(show_download_progress(recv.into_stream(), total_size));
-//     let stats = iroh_bytes::get::db::get_to_db(&db, connection, &hash_and_format, progress)
-//         .await
-//         .map_err(show_get_error)?;
-//     let collection = Collection::load(&db, &hash_and_format.hash).await?;
-//     if args.common.verbose > 0 {
-//         for (name, hash) in collection.iter() {
-//             println!("    {} {name}", print_hash(hash, args.common.format));
-//         }
-//     }
-//     if let Some((name, _)) = collection.iter().next() {
-//         if let Some(first) = name.split('/').next() {
-//             println!("downloading to: {};", first);
-//         }
-//     }
-//     export(db, collection).await?;
-//     std::fs::remove_dir_all(iroh_data_dir)?;
-//     if args.common.verbose > 0 {
-//         println!(
-//             "downloaded {} files, {}. took {} ({}/s)",
-//             total_files,
-//             HumanBytes(payload_size),
-//             HumanDuration(stats.elapsed),
-//             HumanBytes((stats.bytes_read as f64 / stats.elapsed.as_secs_f64()) as u64),
-//         );
-//     }
-//     Ok(())
-// }
+pub async fn get(
+    ticket: BlobTicket,
+    target: PathBuf,
+    send: flume::Sender<DownloadProgress>,
+) -> Result<()> {
+    let addr = ticket.node_addr().clone();
+    let secret_key = get_or_create_secret()?;
+    let endpoint = MagicEndpoint::builder()
+        .alpns(vec![])
+        .secret_key(secret_key)
+        .bind(0)
+        .await?;
+    let dir_name = format!(".sendme-get-{}", ticket.hash().to_hex());
+    let iroh_data_dir = target.join(dir_name);
+    let db = iroh_bytes::store::flat::Store::load(&iroh_data_dir).await?;
+
+    let connection = endpoint.connect(addr, iroh_bytes::protocol::ALPN).await?;
+    let hash_and_format = HashAndFormat {
+        hash: ticket.hash(),
+        format: ticket.format(),
+    };
+
+    let progress = iroh_bytes::util::progress::FlumeProgressSender::new(send);
+    let (_hash_seq, sizes) =
+        get_hash_seq_and_sizes(&connection, &hash_and_format.hash, 1024 * 1024 * 32).await?;
+
+    let total_size = sizes.iter().sum::<u64>();
+    let total_files = sizes.len().saturating_sub(1);
+    let payload_size = sizes.iter().skip(1).sum::<u64>();
+    eprintln!(
+        "getting collection {} {} files, {}",
+        print_hash(&ticket.hash(), Format::Hex),
+        total_files,
+        payload_size
+    );
+    // print the details of the collection only in verbose mode
+
+    eprintln!("getting {} blobs in total, {}", sizes.len(), total_size);
+
+    let stats = iroh_bytes::get::db::get_to_db(&db, connection, &hash_and_format, progress).await?;
+    let collection = Collection::load(&db, &hash_and_format.hash).await?;
+
+    for (name, hash) in collection.iter() {
+        println!("    {} {name}", print_hash(hash, Format::Hex));
+    }
+
+    if let Some((name, _)) = collection.iter().next() {
+        if let Some(first) = name.split('/').next() {
+            println!("downloading to: {};", first);
+        }
+    }
+    export(&target, db, collection).await?;
+    std::fs::remove_dir_all(iroh_data_dir)?;
+
+    println!(
+        "downloaded {} files, {}. took {:?} ({}/s)",
+        total_files,
+        payload_size,
+        stats.elapsed,
+        (stats.bytes_read as f64 / stats.elapsed.as_secs_f64()) as u64
+    );
+
+    Ok(())
+}
