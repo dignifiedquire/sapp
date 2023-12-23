@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::Context;
 use eframe::{
-    egui::{self, Button, Id},
+    egui::{self, Button, RichText, Style},
     emath::Align,
     epaint::{vec2, Color32, Stroke},
 };
@@ -83,8 +83,55 @@ enum WorkerMessage {
     Get(String, PathBuf),
 }
 
+const DARK_BG: Color32 = Color32::from_rgb(26, 28, 32);
+const MEDIUM_BG: Color32 = Color32::from_rgb(42, 46, 53);
+const TEXT_COLOR: Color32 = Color32::from_rgb(117, 121, 131);
+const BLUE_COLOR: Color32 = Color32::from_rgb(0, 138, 216);
+const WHITE_COLOR: Color32 = Color32::WHITE;
+
 impl Sapp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Configure basic style
+
+        let mut style = Style::default();
+
+        style.spacing.button_padding = vec2(5., 5.);
+
+        let visuals = &mut style.visuals;
+        visuals.dark_mode = true;
+        visuals.panel_fill = DARK_BG;
+        visuals.code_bg_color = MEDIUM_BG;
+        visuals.selection.bg_fill = BLUE_COLOR;
+        visuals.selection.stroke = Stroke::new(1., WHITE_COLOR);
+
+        let widgets = &mut visuals.widgets;
+        widgets.active.bg_fill = DARK_BG;
+        widgets.active.weak_bg_fill = BLUE_COLOR;
+        widgets.active.fg_stroke = Stroke::new(1., WHITE_COLOR);
+        widgets.active.bg_stroke = Stroke::new(1., WHITE_COLOR);
+
+        widgets.open.bg_fill = MEDIUM_BG;
+        widgets.open.weak_bg_fill = MEDIUM_BG;
+        widgets.open.fg_stroke = Stroke::new(1., TEXT_COLOR);
+        widgets.open.bg_stroke = Stroke::new(1., TEXT_COLOR);
+
+        widgets.inactive.bg_fill = MEDIUM_BG;
+        widgets.inactive.weak_bg_fill = BLUE_COLOR;
+        widgets.inactive.fg_stroke = Stroke::new(1., WHITE_COLOR);
+        widgets.inactive.bg_stroke = Stroke::new(1., WHITE_COLOR);
+
+        widgets.hovered.bg_fill = MEDIUM_BG;
+        widgets.hovered.weak_bg_fill = BLUE_COLOR;
+        widgets.hovered.fg_stroke = Stroke::new(1., WHITE_COLOR);
+        widgets.hovered.bg_stroke = Stroke::new(1., WHITE_COLOR);
+
+        widgets.noninteractive.bg_fill = MEDIUM_BG;
+        widgets.noninteractive.weak_bg_fill = MEDIUM_BG;
+        widgets.noninteractive.fg_stroke = Stroke::new(1., TEXT_COLOR);
+        widgets.noninteractive.bg_stroke = Stroke::new(1., TEXT_COLOR);
+
+        cc.egui_ctx.set_style(style);
+
         let ctx = cc.egui_ctx.clone();
         let shared_state = Arc::new(Mutex::new(SharedState::default()));
         let ss1 = shared_state.clone();
@@ -248,27 +295,34 @@ impl eframe::App for Sapp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                ui.heading("Receive");
+                ui.label(RichText::new("Receive").heading().color(WHITE_COLOR));
                 ui.add_space(10.);
 
                 let state = self.shared_state.lock().unwrap();
                 if state.download_progress.is_some() {
                     let mut text: &str = &self.input_text;
                     ui.add(egui::TextEdit::multiline(&mut text).font(egui::FontId::monospace(12.)));
+                    ui.add_space(10.);
                 } else {
                     ui.add(
                         egui::TextEdit::multiline(&mut self.input_text)
                             .font(egui::FontId::monospace(12.))
                             .hint_text("Paste ticket"),
                     );
-                    if ui.button("Save to").clicked() {
+
+                    ui.add_space(10.);
+                    let button = egui::Button::new("Save to...");
+
+                    if ui.add(button).clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
                             self.download_target.replace(path);
                         }
                     }
                 }
                 if let Some(ref target) = self.download_target {
+                    ui.add_space(5.);
                     ui.label(format!("Target: {}", target.display()));
+                    ui.add_space(5.);
 
                     if let Some(_progress) = state.download_progress {
                         ui.add_space(5.);
@@ -286,13 +340,13 @@ impl eframe::App for Sapp {
             ui.separator();
             ui.add_space(20.);
             ui.vertical_centered(|ui| {
-                ui.heading("Send");
+                ui.label(RichText::new("Send").heading().color(WHITE_COLOR));
                 ui.add_space(10.);
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let button = Button::new("Drag and drop or browse your files…")
                         .rounding(10.)
-                        .stroke(Stroke::new(2., Color32::DARK_GRAY))
+                        .fill(MEDIUM_BG)
                         .min_size(vec2(250., 150.));
 
                     let button_res = ui.add(button);
@@ -305,7 +359,7 @@ impl eframe::App for Sapp {
 
                     if let Some(path) = &self.selected_file {
                         ui.vertical_centered(|ui| {
-                            ui.add_space(50.);
+                            ui.add_space(25.);
                             ui.heading("Selected file:");
                             let name = path
                                 .file_name()
@@ -314,7 +368,7 @@ impl eframe::App for Sapp {
                                 .unwrap_or_else(|| path.display().to_string());
                             ui.monospace(&name);
 
-                            ui.add_space(30.);
+                            ui.add_space(15.);
                             {
                                 let state = self.shared_state.lock().unwrap();
                                 if state.ticket.is_none() {
