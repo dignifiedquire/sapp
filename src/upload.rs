@@ -5,7 +5,7 @@ use futures::{
 };
 use iroh_bytes::{
     format::collection::Collection,
-    provider::{self, handle_connection, Event, EventSender},
+    provider::{handle_connection, Event, EventSender},
     store::{ExportMode, ImportMode, ImportProgress},
     BlobFormat, Hash, TempTag,
 };
