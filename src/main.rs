@@ -5,8 +5,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use anyhow::Context;
 use eframe::{
-    egui::{self, Button},
+    egui::{self, Button, Id},
+    emath::Align,
     epaint::{vec2, Color32, Stroke},
 };
 use iroh_bytes::get::db::DownloadProgress;
@@ -65,10 +67,11 @@ struct SharedState {
     sharing_progress: Option<f32>,
     ticket: Option<BlobTicket>,
     download_progress: Option<f32>,
+    errors: Vec<anyhow::Error>,
 }
 
 impl SharedState {
-    fn reset(&mut self) {
+    fn reset_download(&mut self) {
         self.sharing_progress = None;
         self.ticket = None;
     }
@@ -138,8 +141,8 @@ impl Sapp {
                                 ctx.request_repaint();
                             }
                             Err(err) => {
-                                // TODO: show error
                                 eprintln!("failed: {:?}", err);
+                                ss1.lock().unwrap().errors.push(err.context("sharing"));
                             }
                         }
                     }
@@ -170,16 +173,19 @@ impl Sapp {
                                 });
 
                                 if let Err(err) = res {
-                                    // TODO: show error
                                     eprintln!("failed: {:?}", err);
+                                    ss1.lock().unwrap().errors.push(err.context("get"));
                                 } else {
                                     ss1.lock().unwrap().download_progress = None;
                                     ctx.request_repaint();
                                 }
                             }
                             Err(err) => {
-                                // TODO: show error
                                 eprintln!("invalid ticket: {:?}", err);
+                                ss1.lock()
+                                    .unwrap()
+                                    .errors
+                                    .push(anyhow::anyhow!(err).context("parsing ticket"));
                             }
                         }
                     }
@@ -193,6 +199,47 @@ impl Sapp {
             download_target: None,
             worker: s,
             selected_file: None,
+        }
+    }
+
+    fn show_errors(&mut self, ctx: &egui::Context) {
+        let err = self
+            .shared_state
+            .lock()
+            .unwrap()
+            .errors
+            .last()
+            .map(|e| format!("{:#}", e));
+
+        if let Some(err) = err {
+            let center = ctx.screen_rect().center();
+            let width = 200.;
+            let height = 100.;
+
+            let pos = egui::Pos2 {
+                x: center.x - width / 2.,
+                y: center.y - height / 2.,
+            };
+            egui::Window::new("⚠ Error")
+                .fixed_size(vec2(width, height))
+                .collapsible(false)
+                .fixed_pos(pos)
+                .show(ctx, |ui| {
+                    ui.set_min_height(height);
+                    ui.set_min_width(width);
+
+                    ui.add_space(5.);
+                    ui.label(err);
+                    ui.add_space(5.);
+
+                    ui.with_layout(egui::Layout::bottom_up(Align::RIGHT), |ui| {
+                        if ui.button("Ok").clicked() {
+                            self.shared_state.lock().unwrap().errors.pop();
+                        }
+                        ui.add_space(5.);
+                        ui.separator();
+                    });
+                });
         }
     }
 }
@@ -305,10 +352,13 @@ impl eframe::App for Sapp {
             if !i.raw.dropped_files.is_empty() {
                 if let Some(ref path) = i.raw.dropped_files[0].path {
                     self.selected_file.replace(path.clone());
-                    self.shared_state.lock().unwrap().reset();
+                    self.shared_state.lock().unwrap().reset_download();
                 }
             }
         });
+
+        // Show potential errors
+        self.show_errors(&ctx);
     }
 }
 
